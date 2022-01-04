@@ -4,14 +4,18 @@
 #include <cstdlib>
 #include <ctime>
 #include <unordered_map>
+#include <map>
 #include <vector>
+#include <limits>
 
 // https://graphics.stanford.edu/~seander/bithacks.html
-// iterates over combinations of s bits with x of them set to 1. May be target for speedup
+// iterates over combinations of s bits with x of them set to 1.
 #define ITERPERM(s, x, i, t) for(i = (1 << x) - 1; i < 1 << s; t = (i | (i - 1)) + 1, i = (i == 0 ? 1 << s : t | ( ((t & -t)/(i & -i) >> 1) - 1)))
 #define MASK(a, b) ( ((1 << b) - 1) ^ ((1 << a) - 1) )
 
 using namespace std;
+
+const double dbl_inf = numeric_limits<double>::infinity();
 
 // https://graphics.stanford.edu/~seander/bithacks.html
 int cnt(int x) {
@@ -24,43 +28,81 @@ bool dblEq(double a, double b) {
     return fabs(a - b) < 0.000001;
 }
 
-// board with potential unsolved tiles, does not include row data (should it?)
-// does not include plusness (might need to, new class?)
-struct vfBoard {
+size_t pow5table[5][5] = {
+    {1, 5, 25, 125, 625},
+    {3125, 15625, 78125, 390625, 1953125},
+    {9765625, 48828125, 244140625, 1220703125, 6103515625},
+    {30517578125, 152587890625, 762939453125, 3814697265625, 19073486328125},
+    {95367431640625, 476837158203125, 2384185791015625, 11920928955078125, 59604644775390625}
+};
+
+// board with potential unsolved tiles, 0 = voltorb, 1/2/3 themselves, 4 = unflipped
+// you really need to make this presentable
+class vfBoard {
+public:
     uint8_t tiles[5][5];
 
-    bool operator== (const vfBoard& other) const {
-        for (int i = 0; i < 5; i++) {
-            for (int j = 0; j < 5; j++) {
-                if (tiles[i][j] != other.tiles[i][j])
-                    return 0;
-            }
-        }
-        return 1;
+    vfBoard() {
+        for (int i = 0; i < 5; i++)
+            for (int j = 0; j < 5; j++)
+                tiles[i][j] = 4;
+    }
+};
+
+// Complete vfBoard, indicating a possible board for a specific round. Weight = relative frequency of this board vs others
+class vfBoardC : public vfBoard {
+public:
+    double weight;
+    vfBoardC(): vfBoard(), weight(0) {}
+};
+
+// In-game, possibly incomplete vfBoard, for usage during calculations
+class vfBoardI : public vfBoard {
+public:
+    size_t hash;
+
+    vfBoardI(): vfBoard(), hash(0) {}
+
+    void manualHash() {
+        hash = 0;
+        for (int i = 4; i >= 0; i--)
+            for (int j = 4; j >= 0; j--)
+                hash = 5*hash + (tiles[i][j] & 3);
+    }
+
+    // hashing all 25 tiles becomes expensive, but we can recalculate the hash
+    // with a few operations if only one tile is changed (as is usually the case).
+    // split into set/unset if this is still significant
+    void setTileAndHash(int x, int y, int v) {
+        hash += pow5table[x][y]*((v & 3) - (tiles[x][y] & 3));
+        tiles[x][y] = v;
+    }
+
+    bool operator== (const vfBoardI& other) const {
+        return hash == other.hash;
+    }
+
+    bool operator< (const vfBoardI& other) const {
+        return hash < other.hash;
     }
 };
 
 template<>
-struct std::hash<vfBoard> {
-    size_t operator()(const vfBoard &v) const {
-        size_t ret = 0;
-        for (int i = 0; i < 5; i++)
-            for (int j = 0; j < 5; j++)
-                ret = 5*ret + v.tiles[i][j];
-        return ret;
+struct std::hash<vfBoardI> {
+    size_t operator()(const vfBoardI &v) const {
+        return v.hash;
     }
 };
 
 struct posData {
-    int bmX, bmY;
     double winChance;
     double gameTime;
-    int possBoards;
+    double totalWeight;
 };
 
 class VFCalc {
 
-public:
+public: // let these remain public until test code requiring them is gone
     int level;
     int rowData[2][5][3];       // first axis: [0]: row, [1]: col
                                 // 3: score, voltorbs, plusness
@@ -69,18 +111,14 @@ public:
 
     static int boardProfiles[8][5][3];
 
-    vector<vfBoard> possBoards;
-    unordered_map<vfBoard, posData> T;
+    vector<vfBoardC> possBoards;
+    vector<int> possProfiles;
+    
+    unordered_map<vfBoardI, posData> T;
+    // map<vfBoardI, posData> T;
 
 // public:
-    VFCalc() {
-        // todo: make plusness data inaccessible, auto-updated in set tile func
-        level = 1;
-    }
-
-    void newBoard(int level, int rd[2][5][2]) {
-        // todo: make plusness data inaccessible, auto-updated in setTile func
-        // move some shit 2 constructor when you know what 2 do
+    VFCalc(int level, int rd[2][5][2]) {
         this->level = level;
         for (int i = 0; i < 2; i++) {
             for (int j = 0; j < 5; j++) {
@@ -89,29 +127,13 @@ public:
                 rowData[i][j][2] = rd[i][j][1] + rd[i][j][0] - 5;
             }
         }
-        possBoards.clear();
-        T.clear();
+
         getPossibleBoards();
         cout << possBoards.size() << " possible boards" << endl;
     }
 
-    // not necessary for now
-    bool solved(vfBoard& board) {
-        int h = 0;
-        for (int i = 0; i < 5; i++) {
-            for (int j = 0; j < 5; j++) {
-                if (board.tiles[i][j] == 2 || board.tiles[i][j] == 3)
-                    h += board.tiles[i][j] - 1;
-            }
-        }
-        return h == 0;
-        // return h == totalPlus;
-    }
-
     void getPossibleBoards() {
-        possBoards.clear();
 
-        bool poss[5] = {0};
         int orbs = 0;
         for (int i = 0; i < 5; i++) {
             orbs += rowData[0][i][1];
@@ -123,19 +145,18 @@ public:
         for (int i = 0; i < 5; i++) {
             if (boardProfiles[level - 1][i][0] + 2*boardProfiles[level - 1][i][1] == totalPlusness
                   && boardProfiles[level - 1][i][2] == orbs) {
-                poss[i] = 1;
+                possProfiles.push_back(i);
             }
         }
-        for(int p = 0; p < 5; p++) {
-            if (!poss[p])
-                continue;
 
-            vfBoard cur;
+        int pbIndex = 0; // tracks size of possBoards before next loop iteration begins, so we know which boards to assign weights to
+
+        for(int p : possProfiles) {
+            vfBoardC cur;
             for (int i = 0; i < 5; i++)
                 for (int j = 0; j < 5; j++)
                     cur.tiles[i][j] = 1;
 
-            // Some of this function was written with 3, 2, 1 notated as 2, 1, 0 (contribution to row plusness). Apologies in advance
             int cnt3 = boardProfiles[level - 1][p][1];
             int cnt2 = boardProfiles[level - 1][p][0];
             int cntv = boardProfiles[level - 1][p][2];
@@ -170,11 +191,13 @@ public:
             int i;
             int tp; // used for permutations
 
+            int variants = 0; // number of boards for this profile, used for weights at the end
+
             // insert tiles in the order 3, 2, v, from most to least restrictive.
             // Probably unnecessarily complex but I thought this would have significant runtime
             // For 3s we must account for boards that do not fill up all potential spaces with 3s
             // There might be a boardProfile with 4 3s, even though the board itself can fit 5.
-            // We use k instead of the rd2, and iterate over possible arrangements of k over the rows
+            // We use k instead of rd2, and iterate over possible arrangements of k over the rows
             ITERPERM(sp, cnt3, i, tp) {
                 for (int j = 0; j < 5; j++) {
                     k[j] = cnt(i & MASK(ind[j], ind[j + 1]));
@@ -400,6 +423,7 @@ public:
 
                                                                             // we have a board
                                                                             possBoards.push_back(cur);
+                                                                            variants++;
 
                                                                             for (int n = 0; n < pi[4].size(); n++) {
                                                                                 if (s[4] & (1 << n)) {
@@ -534,83 +558,264 @@ public:
                 }
             }
 
+            for (int ind = pbIndex; ind < pbIndex + variants; ind++)
+                possBoards[ind].weight = 1.0/variants;
+            pbIndex += variants;
+
+            // cout << p << ": " << variants << endl;
+
         }
     }
 
-    void exec() {
-        cout << "k" << endl;
-        winChance();
-        cout << "k" << endl;
+    void getSubBoards(vfBoardI& vt, vector<int>& subBoards) {
+        for (int i = 0; i < possBoards.size(); i++) {
+            for (int j = 0; j < 5; j++)
+                for (int k = 0; k < 5; k++)
+                    if (vt.tiles[j][k] != 4 && possBoards[i].tiles[j][k] != vt.tiles[j][k])
+                        goto gsb_ENDLOOP;
+            subBoards.push_back(i);
+            // cout << endl;
+            // for (int j = 0; j < 5; j++) {
+            //     for (int k = 0; k < 5; k++) {
+            //         cout << (int)(possBoards[i].tiles[k][j]) << " ";
+            //     }
+            //     cout << endl;
+            // }
+            // cout << endl;
 
-        vfBoard vt;
-        for (int i = 0; i < 5; i++) {
-            for (int j = 0; j < 5; j++) {
-                vt.tiles[i][j] = 4;
+            gsb_ENDLOOP: ;
+        }
+    }
+
+    void display(vfBoardI& vt, bool useWinData) {
+        double wh[5][5], vr[5][5], wc[5][5], gt[5][5];
+        int x, y;
+        getHeuristics(vt, wh, vr);
+        getInDepthData(vt, wc, gt);
+
+        cout << endl;
+        for (int j = 0; j < 5; j++) {
+            for (int i = 0; i < 5; i++) {
+                cout << "  " << (int)(vt.tiles[i][j]) << "   ";
             }
+            cout << "| " << rowData[0][j][0] << " " << rowData[0][j][1] << " ";
+
+            for (int i = 0; i < 5; i++) {
+                if (useWinData) {
+                    if (wc[i][j] == -1)
+                        printf("     ?     |");
+                    else
+                        printf("%.3f %.3f|", wc[i][j], wh[i][j]);
+                } else {
+                    printf("%.3f %.3f|", wh[i][j], vr[i][j]);
+                }
+            }
+            cout << endl;
         }
 
-        int x, y, v;
-        double wc, vr, gt;
-        while(1) {
-            cout << endl;
-            for (int j = 0; j < 5; j++) {
-                for (int i = 0; i < 5; i++) {
-                    cout << "  " << (int)(vt.tiles[i][j]) << "   ";
-                }
-                cout << "| " << rowData[0][j][0] << " " << rowData[0][j][1] << " ";
+        cout << "------------------------------+" << endl;
+        for (int i = 0; i < 5; i++)
+            cout << "  " << rowData[1][i][0] << "   ";
+        cout << endl;
+        for (int i = 0; i < 5; i++)
+            cout << "  " << rowData[1][i][1] << "   ";
+        cout << endl << endl;
 
-                for (int i = 0; i < 5; i++) {
-                    winDataFromPosition(vt, i, j, wc, vr, gt);
-                    if (wc != -1) {
-                        printf("%.3f %.3f %.3f|", wc, vr, gt);
-                    } else {
-                        cout << "        ?        |";
+        if (useWinData) {
+            x = 0; y = 0;
+            for (int i = 0; i < 5; i++) {
+                for (int j = 0; j < 5; j++) {
+                    if (wc[i][j] > wc[x][y] || dblEq(wc[i][j], wc[x][y]) &&
+                        (gt[i][j] < gt[x][y] || dblEq(gt[i][j], gt[x][y]) &&
+                        (wh[i][j] > wh[x][y] || dblEq(wh[i][j], wh[x][y]) &&
+                        vr[i][j] < vr[x][y]))) {
+                        x = i; y = j;
                     }
                 }
-                cout << endl;
             }
+            cout << x << " " << y << " " << wc[x][y] << " " << wh[x][y] << endl;
+        } else {
+            x = 0; y = 0;
+            for (int i = 0; i < 5; i++) {
+                for (int j = 0; j < 5; j++) {
+                    if (wh[i][j] > wh[x][y] || dblEq(wh[i][j], wh[x][y]) && vr[i][j] < vr[x][y]) {
+                        x = i; y = j;
+                    }
+                }
+            }
+            cout << x << " " << y << " " << wh[x][y] << " " << vr[x][y] << endl;
+        }
+    }
 
-            cout << "------------------------------+" << endl;
-            for (int i = 0; i < 5; i++)
-                cout << "  " << rowData[1][i][0] << "   ";
-            cout << endl;
-            for (int i = 0; i < 5; i++)
-                cout << "  " << rowData[1][i][1] << "   ";
-            cout << endl << endl;
+    bool doable(vfBoardI& vt) {
+        vector<int> sub;
+        getSubBoards(vt, sub);
 
-            cout << T[vt].bmX << " " << T[vt].bmY << " " << T[vt].winChance << endl;
+        if (sub.size() >= 15000) return 0; // arbitrary decision
 
-            cin >> x >> y >> v;
-            // x = T[vt].bmX;
-            // y = T[vt].bmY;
-            // cin >> v;
+        bool poss[5][5][3] = {{{0}}};
 
-            vt.tiles[x][y] = v;
-            if (T.find(vt) == T.end()) {
-                cout << "-- NEW POSITION --" << endl;
-                winChance(vt, 0);
+        double d = 0;
+        double I = 0;
+        double T = 0;
+
+        for (int p : possProfiles) {
+            d += boardProfiles[level - 1][p][0] + boardProfiles[level - 1][p][1];
+        }
+        d /= possProfiles.size();
+
+        int rd2[2][5];
+        for (int i = 0; i < 5; i++) {
+            rd2[0][i] = rowData[0][i][2];
+            rd2[1][i] = rowData[1][i][2];
+        }
+        for (int i = 0; i < 5; i++) {
+            for (int j = 0; j < 5; j++) {
+                if (vt.tiles[i][j] == 2 || vt.tiles[i][j] == 3) {
+                    rd2[0][j] -= vt.tiles[i][j] - 1;
+                    rd2[1][i] -= vt.tiles[i][j] - 1;
+                    d--;
+                }
             }
         }
+
+        for (int i = 0; i < 5; i++) {
+            for (int j = 0; j < 5; j++) {
+                if (vt.tiles[i][j] == 4 && rd2[0][j] != 0 && rd2[1][i] != 0) {
+                    T++;
+                    for (auto b : possBoards) {
+                        if (b.tiles[i][j] > 0) {
+                            if (!poss[i][j][b.tiles[i][j] - 1])
+                                I++;
+                            poss[i][j][b.tiles[i][j] - 1] = 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        cout << I << " " << T << " " << d << " " << doabilityEst(d, I, T) << endl;
+
+        return doabilityEst(d, I, T) < pow(10, 29);//doabilityEst(8.5, 45, 20); why does 10^29 work at all
+        // return (tgamma(d + 1)*pow(I/d, d) < 542097412.116);
+    }
+
+    double doabilityEst(double d, double I, double T) {
+        return d*pow(I, (I/T - 1)*(d + 1));
+    }
+
+    bool doable_old(vfBoardI& vt) {
+        vector<int> sub;
+        getSubBoards(vt, sub);
+        if (sub.size() >= 15000) return 0; // arbitrary decision
+
+        bool poss[5] = {0};
+        int orbs = 0;
+        for (int i = 0; i < 5; i++) {
+            orbs += rowData[0][i][1];
+        }
+        int totalPlusness = 0;
+        for (int i = 0; i < 5; i++) {
+            totalPlusness += rowData[0][i][2];
+        }
+
+        int found2 = 0, found3 = 0;
+
+        for (int i = 0; i < 5; i++) {
+            for (int j = 0; j < 5; j++) {
+                if (vt.tiles[i][j] == 2)
+                    found2++;
+                if (vt.tiles[i][j] == 3)
+                    found3++;
+            }
+        }
+
+        int worstDepth = 0;
+
+        for (int i = 0; i < 5; i++) {
+            if (boardProfiles[level - 1][i][0] + 2*boardProfiles[level - 1][i][1] == totalPlusness
+                  && boardProfiles[level - 1][i][2] == orbs
+                  && boardProfiles[level - 1][i][0] >= found2 && boardProfiles[level - 1][i][1] >= found3) {
+
+                if (boardProfiles[level - 1][i][0] + boardProfiles[level - 1][i][1] - found2 - found3 > worstDepth) {
+                    worstDepth = boardProfiles[level - 1][i][0] + boardProfiles[level - 1][i][1] - found2 - found3;
+                }
+            }
+        }
+
+        int validTiles = 0;
+
+        for (int i = 0; i < 5; i++) {
+            for (int j = 0; j < 5; j++) {
+                if (rowData[0][j][2] != 0 && rowData[0][j][2] != 0)
+                    validTiles++;
+            }
+        }
+
+        cout << "v = " << validTiles << ", d = " << worstDepth << endl;
+
+        // rough estimate of complexity is (d!*(v/d)^d)^2
+        // d = depth, assumed proportional to total 2s and 3s. To keep it simple say its 1.5x that, it may depend on v/1 layout
+        // v = amount of valid tiles (not 4/1 etc)
+        // so we check the value of d!*(v/d)^d
+
+        double mv = 0.7;
+        double md = 1.5;
+
+        double d = md*worstDepth;
+        double v = mv*validTiles;
+        double x = tgamma(d + 1)*pow(v/d, d);
+
+        cout << tgamma(d + 1) << " " << pow(v/d, d) << " " << x << endl;
+
+        return x < pow(10, 13); // ?
+    }
+
+    void exec() {
+        vfBoardI vt;
+
+        double wh[5][5], vr[5][5];
+        int x, y, v;
+
+        while (!doable(vt)) {
+            display(vt, 0);
+            cin >> x >> y >> v;
+            vt.tiles[x][y] = v;
+        }
+
+        bool h = 1;
+        cout << "Brute-forcing now..." << endl;
+        vt.manualHash();
+        while(T.find(vt) == T.end() || T[vt].gameTime != 0) {
+            if (T.find(vt) == T.end()) {
+                cout << "-- NEW POSITION --" << endl;
+                bruteForceWinChances(vt);
+            }
+            display(vt, 1);
+            cin >> x >> y >> v;
+            vt.setTileAndHash(x, y, v);
+        }
+
     }
 
     // debug info
     int wc_ex, wc_te;
 
-    double winChance() {
-        vfBoard vt;
-        for (int i = 0; i < 5; i++) {
-            for (int j = 0; j < 5; j++) {
-                vt.tiles[i][j] = 4;
-            }
-        }
-
-        return winChance(vt, 0);
+    double bruteForceWinChances() {
+        vfBoardI vt;
+        return bruteForceWinChances(vt);
     }
 
-    double winChance(vfBoard& vt, bool debug) {
-        vector<int> sub;
-        for (int i = 0; i < possBoards.size(); i++)
-            sub.push_back(i);
+    double bruteForceWinChances(vfBoardI& vt) {
+        vector<int> subi;
+        getSubBoards(vt, subi);
+
+        vector<uint16_t> sub;
+        double tw = 0;
+        for (auto x : subi) {
+            sub.push_back(x);
+            tw += possBoards[x].weight;
+        }
 
         int plusData[2][5];
         for (int i = 0; i < 2; i++)
@@ -626,9 +831,11 @@ public:
             }
         }
 
+        vt.manualHash();
+
         wc_ex = 0;
         wc_te = 0;
-        double ret = winChance(vt, sub, plusData, debug);
+        double ret = bruteForceWinChances(vt, sub, plusData, tw);
         cout << "E " << wc_ex << endl;
         cout << "T " << wc_te << endl;
         return ret;
@@ -636,71 +843,56 @@ public:
 
     // todo: take 0 voltorb rows immediately
     //       get win chance for all tiles
-    double winChance(vfBoard& curPos, vector<int>& sub, int plusData[2][5], bool debug) {
-        if (debug) {
-            cout << endl << "wc " << sub.size() << endl;
-            for (int j = 0; j < 5; j++) {
-                for (int i = 0; i < 5; i++) {
-                    cout << (int)(curPos.tiles[i][j]) << " ";
-                }
-                cout << "| " << plusData[0][j];
-                cout << endl;
-            }
-
-            cout << "----------+" << endl;
-            for (int i = 0; i < 5; i++)
-                cout << plusData[1][i] << " ";
-            cout << endl << endl;
-
-        }
+    double bruteForceWinChances(vfBoardI& curPos, vector<uint16_t>& sub, int plusData[2][5], double tw) {
         wc_ex++;
 
         if (T.find(curPos) != T.end()) return T[curPos].winChance;
         // do we need this?
         // gprof later, maybe initial solved check thats faster than the loop
-        // if (solved(curPos)) {
-        //     T[curPos] = {5, 5, 1};
+        // if (plusData[0][0] == 0 && plusData[0][1] == 0 && plusData[0][2] == 0 && plusData[0][3] == 0 && plusData[0][4] == 0) {
+        //     T[curPos] = {5, 5, 1, 0, (int)(sub.size())};
         //     return 1;
         // }
 
         double ret = 0, retd = 25;
-        vfBoard workingPos = curPos;
-        int bmX = 5, bmY = 5;
+        bool ran = 0;
         for (int x = 0; x < 5; x++) {
             for (int y = 0; y < 5; y++) {
                 if (curPos.tiles[x][y] != 4 || plusData[0][y] == 0 || plusData[1][x] == 0)
                     continue;
+                ran = 1;
 
-                double ret2 = 0, retd2 = 0;
-                vector<int> subn[3];
+                double ret2 = 0, retd2 = 0, w[3] = {0};
+                vector<uint16_t> subn[3];
 
                 // skip count if curPos [xy]=i is solved --> get count from child calls?
                 // does that require knowing whether solved or not before entering loop
                 for (int i = 0; i < sub.size(); i++) {
                     if (possBoards[sub[i]].tiles[x][y] > 0) {
                         subn[possBoards[sub[i]].tiles[x][y] - 1].push_back(sub[i]);
+                        w[possBoards[sub[i]].tiles[x][y] - 1] += possBoards[sub[i]].weight;
                     }
                 }
                 for (int i = 0; i < 3; i++) {
                     if (subn[i].size() > 0) {
                         // maybe conglomerate this @ some point
-                        plusData[0][y] -= (i + 1) - (curPos.tiles[x][y] == 4 ? 1 : curPos.tiles[x][y]);
-                        plusData[1][x] -= (i + 1) - (curPos.tiles[x][y] == 4 ? 1 : curPos.tiles[x][y]);
-                        curPos.tiles[x][y] = i + 1;
-                        ret2 += subn[i].size()*winChance(curPos, subn[i], plusData, debug);
+                        plusData[0][y] -= i + 1 - (curPos.tiles[x][y] == 4 ? 1 : curPos.tiles[x][y]);
+                        plusData[1][x] -= i + 1 - (curPos.tiles[x][y] == 4 ? 1 : curPos.tiles[x][y]);
+                        // plusData[0][y] += (curPos.tiles[x][y] - 1) % 3 - i % 3;
+                        // plusData[1][x] += (curPos.tiles[x][y] - 1) % 3 - i % 3;
+                        curPos.setTileAndHash(x, y, i + 1);
+                        ret2 += w[i]*bruteForceWinChances(curPos, subn[i], plusData, w[i]);
                         // T[curPos] should always exist
-                        retd2 += subn[i].size()*T[curPos].gameTime;
+                        retd2 += w[i]*T[curPos].gameTime;
                     }
                 }
-                ret2 /= sub.size();
-                retd2 = 1 + retd2/sub.size();
+                ret2 /= tw;
+                retd2 = 1 + retd2/tw;
 
                 plusData[0][y] += (curPos.tiles[x][y] == 4 ? 1 : curPos.tiles[x][y]) - 1;
                 plusData[1][x] += (curPos.tiles[x][y] == 4 ? 1 : curPos.tiles[x][y]) - 1;
-                curPos.tiles[x][y] = 4;
+                curPos.setTileAndHash(x, y, 4);
                 if (ret2 > ret || dblEq(ret2, ret) && retd2 < retd) {
-                    bmX = x;
-                    bmY = y;
                     ret = ret2;
                     retd = retd2;
                 }
@@ -708,37 +900,106 @@ public:
         }
 
         wc_te++;
-        T[curPos] = {bmX, bmY, bmX == 5 ? 1 : ret, bmX == 5 ? 0 : retd, (int)(sub.size())};
-        return bmX == 5 ? 1 : ret;
+        T[curPos] = {ran ? ret : 1, ran ? retd : 0, tw};
+        return (ran ? ret : 1);
     }
 
-    // returns -1 if position not in table, (hopefully) meaning dead tile
-void winDataFromPosition(vfBoard& vt, int x, int y, double& wc, double& vr, double& gt) {
-        if (vt.tiles[x][y] != 4 || T.find(vt) == T.end()) {
-            wc = vr = gt = -1;
+    void getInDepthData(vfBoardI& vt, double wc[5][5], double gt[5][5]) {
+        if (T.find(vt) == T.end()) {
+            for (int x = 0; x < 5; x++) {
+                for (int y = 0; y < 5; y++) {
+                    wc[x][y] = gt[x][y] = -1;
+                }
+            }
             return;
         }
+        for (int x = 0; x < 5; x++) {
+            for (int y = 0; y < 5; y++) {
+                if (vt.tiles[x][y] != 4) {
+                    wc[x][y] = gt[x][y] = -1;
+                    continue;
+                }
 
-        wc = vr = gt = 0;
-        int temp = vt.tiles[x][y];
-        for (int i = 1; i <= 3; i++) {
-            vt.tiles[x][y] = i;
-            if (T.find(vt) != T.end()) {
-                wc += T[vt].possBoards*T[vt].winChance;
-                vr += T[vt].possBoards;
-                gt += T[vt].possBoards*T[vt].gameTime;
+                wc[x][y] = gt[x][y] = 0;
+                int temp = vt.tiles[x][y];
+                for (int i = 1; i <= 3; i++) {
+                    vt.setTileAndHash(x, y, i);
+                    if (T.find(vt) != T.end()) {
+                        wc[x][y] += T[vt].totalWeight*T[vt].winChance;
+                        gt[x][y] += T[vt].totalWeight*T[vt].gameTime;
+                    }
+                }
+                vt.setTileAndHash(x, y, temp);
+
+                if (wc[x][y] == 0) {
+                    wc[x][y] = -1; gt[x][y] = -1;
+                    continue;
+                }
+
+                wc[x][y] /= T[vt].totalWeight;
+                gt[x][y] = 1 + gt[x][y]/T[vt].totalWeight;
             }
         }
-        vt.tiles[x][y] = temp;
 
-        if (wc == 0) {
-            wc = -1; vr = -1; gt = -1;
+    }
+
+    // maximize ln(p_v)/s, p_v is chance of voltorb, s is plusness of tile if not voltorb (2*p_3 + p_2)/(1 - p_v)
+    void getHeuristics(vfBoardI& vt, double wh[5][5], double vr[5][5]) {
+        vector<int> subBoards;
+        double tw = 0;
+        double den[5][5];
+        for (int j = 0; j < 5; j++) {
+            for (int k = 0; k < 5; k++) {
+                wh[j][k] = 0;
+                den[j][k] = 0;
+                vr[j][k] = 0;
+            }
+        }
+
+        getSubBoards(vt, subBoards);
+        for (auto x : subBoards)
+            tw += possBoards[x].weight;
+        // cout << subBoards.size() << endl;
+
+        if (subBoards.size() == 0 || tw == 0) {
+            cout << "?????" << endl;
             return;
         }
 
-        wc /= T[vt].possBoards;
-        vr = 1 - vr/T[vt].possBoards;
-        gt = 1 + gt/T[vt].possBoards;
+        for (int i = 0; i < subBoards.size(); i++) {
+            for (int j = 0; j < 5; j++) {
+                for (int k = 0; k < 5; k++) {
+                    int m = possBoards[subBoards[i]].tiles[j][k];
+                    double w = possBoards[subBoards[i]].weight;
+                    if (m == 2) den[j][k] += w;
+                    if (m == 3) den[j][k] += 2*w;
+                    if (m == 0) vr[j][k] += w;
+                }
+            }
+            // cout << endl;
+            // for (int k = 0; k < 5; k++) {
+            //     for (int j = 0; j < 5; j++) {
+            //         cout << den[j][k] << "," << pv[j][k] << " ";
+            //     }
+            //     cout << endl;
+            // }
+            // cout << endl;
+        }
+
+        for (int j = 0; j < 5; j++) {
+            for (int k = 0; k < 5; k++) {
+                den[j][k] /= tw;
+                vr[j][k] /= tw;
+                // cout << j << " " << k << " " << "den: " << den[j][k] << " pv: " << pv[j][k] << " " << mx << " " << my << " " << best << endl;
+                if (vt.tiles[j][k] != 4 || den[j][k] == 0 || dblEq(vr[j][k], tw)) {
+                    wh[j][k] = -dbl_inf;
+                    continue;
+                }
+                wh[j][k] = (1 - vr[j][k])*log(1 - vr[j][k])/den[j][k];
+            }
+        }
+        // cout << mx << " " << my << " " << best << endl;
+
 
     }
 
@@ -795,14 +1056,16 @@ int VFCalc::boardProfiles[8][5][3] = {
     }
 };
 
-int main() {
-    srand(time(0));
+void runBoards() {
+    unsigned seed = time(0); // 16412511
+    cout << seed << endl;
+    srand(seed);
 
-    VFCalc calc;
     int rd[2][5][2];
-    int lvl = 6, profn = 0, prof[3], board[5][5];
+    int lvl = 8, profn = 0, prof[3], board[5][5];
     int bcnt = 0;
     while (1) {
+        // cout << "Level " << lvl << ", profile " << profn << endl;
         prof[0] = VFCalc::boardProfiles[lvl - 1][profn][0];
         prof[1] = VFCalc::boardProfiles[lvl - 1][profn][1];
         prof[2] = VFCalc::boardProfiles[lvl - 1][profn][2];
@@ -828,26 +1091,49 @@ int main() {
             rd[0][j][0] = rd[0][j][1] = 0;
             rd[1][j][0] = rd[1][j][1] = 0;
         }
+
         for (int j = 0; j < 5; j++) {
             for (int k = 0; k < 5; k++) {
-                rd[0][j][0] += board[j][k];
+                // cout << board[j][k] << " ";
                 rd[1][k][0] += board[j][k];
+                rd[0][j][0] += board[j][k];
                 rd[0][j][1] += (board[j][k] == 0);
                 rd[1][k][1] += (board[j][k] == 0);
             }
+            // cout << endl;
         }
 
-        calc.newBoard(lvl, rd);
-        bcnt = calc.possBoards.size();
-        calc.winChance();
+        // for (int i = 0; i < 2; i++) {
+        //     for (int j = 0; j < 5; j++)
+        //         cout << rd[i][j][0] + rd[i][j][1] - 5 << " ";
+        //     cout << endl;
+        // }
+        // for (int i = 0; i < 2; i++)
+        //     for (int j = 0; j < 5; j++)
+        //         cout << rd[i][j][0] << " " << rd[i][j][1] << " ";
+        // cout << endl;
 
-        if (bcnt >= 5000) break;
+        VFCalc calc(lvl, rd);
+        bcnt = calc.possBoards.size();
+
+        vfBoardI vt;
+
+        bool d = calc.doable(vt);
+        // cout << d << endl;
+        if (!d) {
+            // calc.bruteForceWinChances();
+            cout << "Level " << lvl << endl;
+            calc.exec();
+            cout << endl;
+        }
+
+        if (bcnt >= 65536) break;
         profn++;
         if (profn >= 5) {
             profn = 0;
             lvl++;
             if (lvl >= 9)
-                lvl = 6;
+                lvl = 5;
         }
     }
 
@@ -861,57 +1147,71 @@ int main() {
     }
 
     cout << lvl << " " << profn << endl;
+}
 
-    // VFCalc calc;
-    // int level = 8;
-    // int rd[2][5][2] = { { {7, 2}, {6, 1}, {3, 3}, {6, 2}, {6, 2} },
-    //                     { {8, 1}, {3, 3}, {8, 1}, {3, 3}, {6, 2} } };
+void testHash() {
+    vfBoardI vt;
+    cout << vt.hash << endl;
+
+    vt.setTileAndHash(2, 3, 3);
+    cout << vt.hash << endl;
+    vt.manualHash();
+    cout << vt.hash << endl;
+
+    vt.setTileAndHash(1, 4, 1);
+    cout << vt.hash << endl;
+    vt.manualHash();
+    cout << vt.hash << endl;
+
+    vt.setTileAndHash(3, 0, 2);
+    cout << vt.hash << endl;
+    vt.manualHash();
+    cout << vt.hash << endl;
+
+    vt.setTileAndHash(1, 4, 4);
+    cout << vt.hash << endl;
+    vt.manualHash();
+    cout << vt.hash << endl;
+}
+
+int main() {
+
+    // testHash();
+    // return 0;
+    runBoards();
+    return 0;
+
+    int level = 8;
+    int rd[2][5][2] = { { {7, 2}, {6, 1}, {3, 3}, {6, 2}, {6, 2} },
+                        { {8, 1}, {3, 3}, {8, 1}, {3, 3}, {6, 2} } };
+
+    cout << "Level: ";
+    cin >> level;
+    cout << endl;
+    cout << "Row data: " << endl;
+    for (int i = 0; i < 2; i++)
+        for (int j = 0; j < 5; j++)
+            for (int k = 0; k < 2; k++)
+                cin >> rd[i][j][k];
+    cout << endl;
+    VFCalc calc(level, rd);
+
+    calc.exec();
+
+    // cout << calc.bruteForceWinChances() << endl;
+
+    // cout << calc.possBoards.size() << endl;
     //
-    //
-    //
-    // // cout << "Level: ";
-    // // cin >> level;
-    // // cout << endl;
-    // // cout << "Row data: " << endl;
-    // // for (int i = 0; i < 2; i++)
-    // //     for (int j = 0; j < 5; j++)
-    // //         for (int k = 0; k < 2; k++)
-    // //             cin >> rd[i][j][k];
-    // // cout << endl;
-    // calc.newBoard(level, rd);
-    //
-    // calc.exec();
-    //
-    // // cout << calc.winChance() << endl;
-    //
-    // // cout << calc.possBoards.size() << endl;
-    // //
-    // // for (auto x : calc.possBoards) {
-    // //     cout << "--------" << endl;
-    // //     for (int j = 0; j < 5; j++) {
-    // //         for (int i = 0; i < 5; i++) {
-    // //             cout << (int)(x.tiles[i][j]) << " ";
-    // //         }
-    // //         cout << endl;
-    // //     }
-    // // }
-    //
-    // // while (true) {
-    // //     (menu)
-    // //     for (int lvl = 1; lvl <= 8; lvl++) {
-    // //         input for lvl and rd
-    // //         calc.newBoard(lvl, rd);
-    // //         calc.display();
-    // //         calc.getWinChanceData(); // make sure update tile display
-    // //
-    // //         int x, y, v;
-    // //         cin >> x >> y >> v;
-    // //         if (v == 0) break;
-    // //
-    // //         calc.enterTile(x, y, v);
-    // //     }
-    // // }
-    // // // ...
+    // for (auto x : calc.possBoards) {
+    //     cout << "--------" << endl;
+    //     for (int j = 0; j < 5; j++) {
+    //         for (int i = 0; i < 5; i++) {
+    //             cout << (int)(x.tiles[i][j]) << " ";
+    //         }
+    //         cout << endl;
+    //     }
+    // }
+
 
 
 }
