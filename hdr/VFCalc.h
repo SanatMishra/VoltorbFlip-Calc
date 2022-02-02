@@ -8,12 +8,11 @@
 using namespace std;
 
 // board with potential unsolved tiles, 0 = voltorb, 1/2/3 themselves, 4 = unflipped
-// you really need to make this presentable
 class vfBoard {
 public:
     uint8_t tiles[5][5];
 
-    vfBoard(); // TEST REMOVE THIS
+    vfBoard();
 };
 
 // Complete vfBoard, indicating a possible board for a specific round. Weight = relative frequency of this board vs others

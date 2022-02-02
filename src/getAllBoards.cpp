@@ -29,9 +29,6 @@ void VFCalc::getAllBoards() {
                 cur.tiles[i][j] = 1;
 
         int cnt3 = boardProfiles[level - 1][p][1];
-        int cnt2 = boardProfiles[level - 1][p][0];
-        int cntv = boardProfiles[level - 1][p][2];
-        int cnt1 = 25 - cnt3 - cnt2 - cntv;
 
         int rd2[2][5], v2[2][5];
         for (int i = 0; i < 2; i++) {
@@ -59,7 +56,7 @@ void VFCalc::getAllBoards() {
         // Probably unnecessarily complex but this used to have significant runtime
         // For 3s we must account for boards that do not fill up all potential spaces with 3s
         // There might be a boardProfile with 4 3s, even though the board itself can fit 5.
-        // k stores the amount of 2s in each row; we iterate over possible arrangements of k over the rows
+        // k stores the amount of 3s in each row; we iterate over possible arrangements of k over the rows
 
         for (k[0] = 0; k[0] <= min(rd2[0][0]/2, cnt3); k[0]++) {
         for (k[1] = 0; k[1] <= min(rd2[0][1]/2, cnt3 - k[0]); k[1]++) {

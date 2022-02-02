@@ -20,7 +20,6 @@ void vfBoardI::manualHash() {
 // Hashing all 25 tiles becomes expensive, but we can recalculate the hash
 // with a few operations if only one tile is changed (as is usually the case).
 // We also ignore the case of the tile being 0, as it is never set to 0 during the calculation.
-// split into set/unset if this is still significant
 void vfBoardI::setTileAndHash(int x, int y, int v) {
     hash += pow5table[x][y]*((v & 3) - (tiles[x][y] & 3));
     tiles[x][y] = v;
@@ -34,7 +33,6 @@ bool vfBoardI::operator< (const vfBoardI& other) const {
     return hash < other.hash;
 }
 
-// template<>
 size_t std::hash<vfBoardI>::operator()(const vfBoardI &v) const {
     return v.hash;
 }
@@ -249,7 +247,7 @@ bool VFCalc::doable(vfBoardI& vt) {
 
     cout << I << " " << T << " " << d << " " << doabilityEst(d, I, T) << endl;
 
-    return doabilityEst(d, I, T) < pow(10, 29);//doabilityEst(8.5, 45, 20); why does 10^29 work at all
+    return doabilityEst(d, I, T) < doabilityEst(8.5, 45, 20); // pow(10, 29);
     // return (tgamma(d + 1)*pow(I/d, d) < 542097412.116);
 }
 

@@ -1,11 +1,12 @@
 #include "util.h"
 #include <cmath>
 
-// https://graphics.stanford.edu/~seander/bithacks.html PUT SECTION HERE
+// https://graphics.stanford.edu/~seander/bithacks.html#CountBitsSetKernighan
 int cnt(int x) {
-    x = (x & 0x55555555) + (x >> 1 & 0x55555555);
-    x = (x & 0x33333333) + (x >> 2 & 0x33333333);
-    return ((x + (x >> 4) & 0xF0F0F0F) * 0x1010101) >> 24;
+    int c;
+    for (c = 0; x; c++)
+        x &= x - 1;
+    return c;
 }
 
 bool dblEq(double a, double b) {

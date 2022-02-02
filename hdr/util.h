@@ -5,7 +5,7 @@
 
 using namespace std;
 
-// https://graphics.stanford.edu/~seander/bithacks.html PUT SECTION HERE
+// https://graphics.stanford.edu/~seander/bithacks.html#NextBitPermutation
 // iterates over combinations of s bits with x of them set to 1.
 #define ITERPERM(s, x, i, t) for(i = (1 << x) - 1; i < 1 << s; t = (i | (i - 1)) + 1, i = (i == 0 ? 1 << s : t | ( ((t & -t)/(i & -i) >> 1) - 1)))
 
